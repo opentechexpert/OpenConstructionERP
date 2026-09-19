@@ -25,9 +25,12 @@
 # has less to go wrong.
 #
 # One limitation worth knowing before you choose. The published image is built
-# for linux/amd64 only. On an Apple Silicon Mac it therefore runs under
-# emulation, which works but is noticeably slower at runtime; on that hardware
-# `make quickstart` builds natively and is the better choice.
+# for linux/amd64 only, so on an Apple Silicon Mac this pull fails outright with
+# "no matching manifest for linux/arm64/v8". Use `make quickstart-arm64`, which
+# is this same path with the app pinned to amd64 so it runs under emulation.
+# Building natively with `make quickstart` avoids the emulation overhead and is
+# the better choice on that hardware if you give Docker Desktop enough memory;
+# see docker-compose.arm64.yml for why the default 8 GB is not enough.
 #
 # OE_IMAGE_TAG pins a version. Unset it and you get `latest`, which is whatever
 # we released most recently:

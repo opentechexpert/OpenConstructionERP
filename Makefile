@@ -11,7 +11,7 @@ help: ## Show this help
 	@echo "  OpenConstructionERP — Construction Cost Estimation Platform"
 	@echo "  ─────────────────────────────────────────────────────────────"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "  Quick start: make quickstart → http://localhost:8080"
@@ -212,6 +212,19 @@ quickstart-image: quickstart-secrets ## Start quickstart from the published imag
 
 quickstart-image-down: ## Stop the published-image quickstart
 	$(DOCKER_COMPOSE) $(QUICKSTART_IMAGE_FILES) down
+
+# Apple Silicon. The published image is amd64-only, so it has to be asked for by
+# platform or the pull fails outright; pinning it on the app service alone keeps
+# PostgreSQL on its native arm64 image. See docker-compose.arm64.yml.
+QUICKSTART_ARM64_FILES = $(QUICKSTART_IMAGE_FILES) -f docker-compose.arm64.yml
+
+quickstart-arm64: quickstart-secrets ## Start quickstart on Apple Silicon (published image, emulated app)
+	$(DOCKER_COMPOSE) $(QUICKSTART_ARM64_FILES) pull app
+	$(DOCKER_COMPOSE) $(QUICKSTART_ARM64_FILES) up -d
+	@echo "  OpenConstructionERP: http://localhost:8080"
+
+quickstart-arm64-down: ## Stop the Apple Silicon quickstart
+	$(DOCKER_COMPOSE) $(QUICKSTART_ARM64_FILES) down
 
 quickstart-down: ## Stop quickstart
 	$(DOCKER_COMPOSE) -f docker-compose.quickstart.yml down

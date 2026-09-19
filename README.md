@@ -413,6 +413,8 @@ make quickstart
 
 Open **http://localhost:8080**. See [docs/getting-started.md](docs/getting-started.md) for Windows PowerShell commands and the full compose file reference.
 
+> **On an Apple Silicon Mac?** `make quickstart` builds the frontend natively, which needs more memory than Docker Desktop allocates by default - raise it to about 12 GB or the build is killed with "cannot allocate memory". If you would rather not change that setting, run `make quickstart-arm64` instead: the published image with the app pinned to amd64 so it runs under emulation, with PostgreSQL still native. Details in [docker-compose.arm64.yml](docker-compose.arm64.yml).
+
 ### Alternative 3: Local development (clone + npm + uvicorn)
 
 ```bash

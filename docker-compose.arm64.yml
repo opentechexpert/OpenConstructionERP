@@ -1,0 +1,51 @@
+# OpenConstructionERP - Quickstart on Apple Silicon, from the published image
+#
+# Additive override for docker-compose.quickstart.image.yml. It changes one
+# thing: the app is pinned to linux/amd64 so it runs under emulation, while
+# PostgreSQL stays on the native arm64 image.
+#
+#   make quickstart-arm64
+#
+# or by hand:
+#
+#   docker compose -f docker-compose.quickstart.yml \
+#                  -f docker-compose.quickstart.image.yml \
+#                  -f docker-compose.arm64.yml pull app
+#   docker compose -f docker-compose.quickstart.yml \
+#                  -f docker-compose.quickstart.image.yml \
+#                  -f docker-compose.arm64.yml up -d
+#
+# Why this exists. On an Apple Silicon Mac neither of the two documented
+# quickstart paths works unaided:
+#
+#   make quickstart         builds the frontend natively, but that build asks
+#                           for a 9 GB Node heap. Docker Desktop ships with an
+#                           8 GB VM by default, so the build is killed with
+#                           "cannot allocate memory" before it finishes. Raising
+#                           Docker Desktop's memory to ~12 GB fixes it, and if
+#                           you are changing frontend source that is still the
+#                           path you want.
+#
+#   make quickstart-image   pulls the published image, which is built for
+#                           linux/amd64 only. Docker refuses it outright with
+#                           "no matching manifest for linux/arm64/v8" rather
+#                           than silently emulating.
+#
+# Setting DOCKER_DEFAULT_PLATFORM=linux/amd64 to get past the second one is the
+# obvious move and the wrong one: it applies to every service, so compose also
+# demands an amd64 PostgreSQL and fails on the arm64 postgres:16-alpine image
+# that is almost certainly already in your local cache. Pinning the platform on
+# the app service alone keeps the database native, which is where most of the
+# per-query work happens anyway.
+#
+# The app is emulated and therefore slower at runtime than a native build. That
+# is the trade: a stack that starts in a couple of minutes without touching your
+# Docker Desktop settings, against a faster one that needs a bigger VM first.
+#
+# OE_IMAGE_TAG pins a version here exactly as it does for the image path:
+#
+#   OE_IMAGE_TAG=12.9.0 make quickstart-arm64
+
+services:
+  app:
+    platform: linux/amd64
