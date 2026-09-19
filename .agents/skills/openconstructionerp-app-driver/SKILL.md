@@ -30,19 +30,28 @@ docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}'
 
 Identify the application container by its image/name and use its published host port. Common deployments publish the production container on port `8080`, while local Vite development commonly uses `5173`. Do not assume either port when `docker ps` provides a different mapping.
 
-Check readiness using the published URL:
+Check readiness using the backend health contract first, then confirm the frontend separately:
 
 ```bash
+curl --fail --silent --show-error --max-time 10 http://localhost:<published-port>/api/health
 curl --fail --silent --show-error --max-time 10 http://localhost:<published-port>/
 ```
 
-If the application container is absent, inspect the available compose files and use the project’s documented quickstart or production command. Before starting containers, check for an existing stack and avoid disrupting unrelated containers:
+`GET /api/health` is the readiness contract; a `/` response only confirms the static frontend is being served, not that the backend/API is up.
+
+If the application container is absent, inspect the available compose files and use the project’s documented quickstart or production command, for example `docker-compose.quickstart.yml` (or `docker-compose.quickstart.image.yml`) for a local quickstart, or `docker-compose.prod.yml` for a production-style stack. Before starting containers, check for an existing stack and avoid disrupting unrelated containers:
 
 ```bash
 docker compose ps
 ```
 
-Use `docker compose up -d` only when the user asked to start the application or no suitable application container is running. After startup, wait for the container health status and re-check the published URL.
+Only start containers when the user asked to start the application or no suitable application container is running, and use the documented quickstart or production compose file above rather than the bare root `docker-compose.yml` (which brings up supporting services without the application itself), for example:
+
+```bash
+docker compose -f docker-compose.quickstart.yml up -d
+```
+
+After startup, wait for the container health status and re-check `/api/health` and `/`.
 
 ## 2. Open and inspect the app
 
@@ -109,13 +118,22 @@ Use these checks in order:
 ```bash
 docker ps
 docker compose ps
-docker logs --tail 100 <application-container>
-curl --fail --silent --show-error http://localhost:<published-port>/
+curl --fail --silent --show-error --max-time 10 http://localhost:<published-port>/api/health
+curl --fail --silent --show-error --max-time 10 http://localhost:<published-port>/
 ```
+
+Only inspect container logs if you can redact secrets first: startup logs may print a one-time, auto-generated demo/seed password (see the login line emitted when no seed password is pinned via environment variable). Filter it out before viewing, for example:
+
+```bash
+docker logs --tail 100 <application-container> | grep -vi 'password\|Login:'
+```
+
+If you cannot confirm the filter removes all credential-bearing lines for the deployment at hand, skip the logs step and rely on the health/UI checks above instead.
 
 Common distinctions:
 
 - `localhost:5173` is usually a development server and is not the correct URL for a production Docker container.
 - A healthy container with an unreachable host URL usually indicates a missing or different port mapping.
-- A reachable login page with failed login indicates an authentication or seed-data issue, not a Docker networking issue.
+- A reachable login page does not by itself prove the backend/API is available; before classifying a failed login as an authentication or seed-data issue, confirm `GET /api/health` succeeds and inspect the actual login request/response (not just that the login page rendered).
+- A reachable login page with a failed login, once `/api/health` is confirmed healthy, indicates an authentication or seed-data issue, not a Docker networking issue.
 - A page that loads but lacks expected content may indicate frontend asset, API proxy, or backend readiness problems; inspect browser errors and container logs before changing code.
