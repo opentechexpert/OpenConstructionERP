@@ -4,7 +4,7 @@ description: Operate and verify the OpenConstructionERP application through Dock
 compatibility: Requires Docker, curl, and a browser automation interface when performing UI workflows. Credentials must be supplied by the user or an approved environment.
 metadata:
   author: opentechexpert
-  version: "1.1"
+  version: "1.2"
 ---
 
 # OpenConstructionERP app driver
@@ -19,6 +19,7 @@ Use this skill when an agent needs to operate the running OpenConstructionERP ap
 - Do not invent credentials. Ask the user for credentials or use credentials explicitly provided through the environment.
 - Treat destructive actions as requiring confirmation unless the user explicitly requested them.
 - Verify every important action through the UI or an application/API health check; do not claim success from a click alone.
+- A silent UI is not a failed action. Confirm long-running work in the container log and the API before retrying it.
 - Keep browser state and application state separate: a successful page load does not prove that login or a business workflow succeeded.
 
 ## 1. Discover the application
@@ -53,7 +54,7 @@ A `200` from `/` only proves the frontend shell was served. Use the application 
 curl --fail --silent --max-time 10 http://localhost:<published-port>/api/health
 ```
 
-A healthy response reports `status: healthy` plus `version`, `modules_loaded`, `database: ok`, and `schema_matches_models: true`. Treat `schema_matches_models: false` or a non-`ok` database as a blocker and report it instead of proceeding with UI work.
+A healthy response reports `status: healthy` plus `version`, `modules_loaded`, and `database: ok`. `schema_matches_models` can be `true` or `null` on a healthy response; treat only `schema_matches_models: false` or a non-`ok` database as a blocker and report it instead of proceeding with UI work.
 
 ### Run the stack from the main checkout, not a worktree
 
@@ -73,21 +74,32 @@ make quickstart-arm64      # or the platform-appropriate target
 docker ps --format '{{.Names}}' # project is the name prefix
 docker inspect <container> \
   --format '{{index .Config.Labels "com.docker.compose.project"}}'
-docker compose -p <project> down   # no -v: keeps the named volumes
+docker compose <original-compose-file-list> -p <project> down   # no -v: keeps the named volumes
+# see below for deriving <original-compose-file-list> from the container
 ```
 
-Do not rely on the `com.docker.compose.project_working_dir` label to find the owning directory — it is frequently empty. Use the project name, which is always set.
+The `com.docker.compose.project.working_dir` and `com.docker.compose.project.config_files` labels record where the stack was launched from and which files built it. Note the dots: a `project_working_dir` spelling matches nothing and returns empty, which reads as "no directory" rather than "wrong key".
+
+```bash
+docker inspect <container> --format \
+  '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+docker inspect <container> --format \
+  '{{index .Config.Labels "com.docker.compose.project.config_files"}}' \
+  | awk -F, '{for (i=1;i<=NF;i++) printf "-f %s ", $i; print ""}'
+```
+
+The second command emits the list already formatted as repeated `-f` flags, ready to paste in as `<original-compose-file-list>`. This matters because the arm64 quickstart alone chains three files, and dropping one silently yields a different stack definition.
 
 ### Relocating a running stack without losing data
 
 Two things bind the data to the old project, and both must be carried over:
 
-1. **`.env`** — `make quickstart-secrets` generates `POSTGRES_PASSWORD` and `JWT_SECRET` into a gitignored `.env`. The password is baked into the Postgres volume at initialisation, so a freshly generated `.env` cannot read an existing volume. It refuses to overwrite an existing `.env`, so copying the old one first is both safe and required.
+1. **`.env`** — `make quickstart-secrets` only checks for `POSTGRES_PASSWORD` and `JWT_SECRET`, then prints commands and exits when either is missing. The password is baked into the Postgres volume at initialisation, so a freshly generated `.env` cannot read an existing volume. Copying the old `.env` first is both safe and required.
 2. **Named volumes** — they are prefixed with the project name and do not follow a move.
 
 ```bash
 cp -p <old-dir>/.env <main-checkout>/.env
-docker compose -p <old-project> down          # no -v
+docker compose <original-compose-file-list> -p <old-project> down          # no -v
 for v in pg_data app_data; do
   docker volume create "<new-project>_$v"
   docker run --rm -v "<old-project>_$v":/from -v "<new-project>_$v":/to \
@@ -131,13 +143,16 @@ Do not use arbitrary JavaScript evaluation as the default interaction mechanism.
 
 ### Element references go stale
 
-Element references (`e1`, `e8`, …) are invalidated by any navigation, route change, or form submission. Re-read the page to obtain fresh references before every `type`/`click` that follows a navigation, otherwise the action fails with a stale-reference error.
+Element references (`e1`, `e8`, …) are invalidated by any navigation, route change, or form submission, and also by an in-place re-render such as a wizard advancing to its next step without changing the URL. Re-read the page for fresh references before every `type`/`click` that follows any state change, otherwise the action fails with a stale-reference error.
+
+Re-reading also matters because a button's *meaning* can change while its reference stays valid. On the onboarding data step, selecting a different country rewrites the install button's label in place, so the same reference installs a different pack. Confirm the label reads what you expect before clicking a destructive or slow action.
 
 ### Routes behave differently depending on session state
 
 - `/register` and `/users` redirect to `/dashboard` while a session is active. To reach the public registration form, log out or wait for the session to expire, then use the **Create account** link on `/login`.
 - An expired session redirects to `/login?next=<original-path>` and resumes there after login.
-- A brand-new real admin lands on the 6-step setup wizard at `/onboarding`, not `/dashboard`. This is correct behaviour, not a failure — the demo accounts skip it because they are pre-onboarded. Do not click through the wizard on the user's behalf; its choices (language, modules, cost data) are theirs to make.
+- A brand-new real admin lands on the 6-step setup wizard at `/onboarding`, not `/dashboard`. This is correct behaviour, not a failure — the demo accounts skip it because they are pre-onboarded. See "Driving the first-run setup wizard" for how to handle it.
+- Completing onboarding exits to `/projects`. The wizard reappears on later logins until it is completed or skipped, which is not evidence of data loss.
 
 ## 3. Authenticate safely
 
@@ -151,7 +166,11 @@ Determine whether the page is a login screen before entering anything. If creden
 
 ### Demo accounts
 
-Seeded demo accounts use the `@openconstructionerp.com` domain and their credentials are published in the repository documentation, so they are not secrets and may appear in commands. The login page also exposes a one-click demo sign-in button, which is the fastest way to smoke-test without typing a password.
+Seeded demo accounts use the `@openconstructionerp.com` domain. Fresh installs store a randomly generated password per installation unless `DEMO_*_PASSWORD` is set, so the stored hash never matches the documented `DemoPass1234!`.
+
+On a non-production install with `SEED_DEMO` enabled, the login form routes demo emails through a password-free shortcut, so **any** password submitted for a demo address succeeds. That makes the documented credentials work without a hardcoded password, but it also means a successful demo login proves nothing about the password you typed. Do not use a demo account to test authentication itself. Production installs set `SEED_DEMO=false`, which disables the shortcut and restores normal password verification.
+
+Prefer the login page's one-click demo sign-in button or `/auth/demo-login/`, which are the fastest ways to smoke-test without typing a password.
 
 Demo accounts are not a substitute for a real account. When the user asks for a "real" user, do not hand them a demo login.
 
@@ -161,20 +180,22 @@ If the user asks you to generate a password, keep it out of tool arguments and l
 
 ```bash
 umask 077 && python3 -c "import secrets,string; \
-  print(''.join(secrets.choice(string.ascii_letters+string.digits+'+/') for _ in range(20)))" > /tmp/pw.txt
+  alphabet=string.ascii_letters+string.digits+'+/'; \
+  chars=[secrets.choice(string.ascii_letters), secrets.choice(string.digits)] + [secrets.choice(alphabet) for _ in range(18)]; \
+  secrets.SystemRandom().shuffle(chars); print(''.join(chars))" > "${TMPDIR:-/tmp}/pw.txt"
 ```
 
 Pass it to the API by reading the file *inside* the request script, never by interpolating it into a command line. Reveal it to the user only if they explicitly asked for a one-time display, tell them to change it immediately, and delete the file when done:
 
 ```bash
-shred -u /tmp/pw.txt 2>/dev/null || rm -f /tmp/pw.txt
+shred -u "${TMPDIR:-/tmp}/pw.txt" 2>/dev/null || rm -f "${TMPDIR:-/tmp}/pw.txt"
 ```
 
 ## 4. API access and user administration
 
 ### Endpoint layout
 
-Auth endpoints are nested **under the users module**, not at a top-level `/auth`. Trailing slashes are required.
+Auth endpoints are nested **under the users module**, not at a top-level `/auth`. The trailing-slash forms are canonical and visible in OpenAPI; bare forms are also registered for compatibility but hidden from the spec.
 
 ```text
 POST /api/v1/users/auth/login/
@@ -182,7 +203,7 @@ POST /api/v1/users/auth/register/
 POST /api/v1/users/auth/refresh/
 POST /api/v1/users/auth/demo-login/
 GET  /api/v1/users/me/
-GET  /api/v1/users/            # admin only
+GET  /api/v1/users/            # users.list permission (manager+) required
 ```
 
 Guessing `/api/v1/auth/login` returns `404`. When a path is unknown, read the spec rather than guessing — but note it is several megabytes, so filter it and never dump it into the transcript:
@@ -198,7 +219,7 @@ The installation bootstraps its first administrator through normal registration:
 
 - `UserRepository.has_admin()` deliberately excludes any email matching `%@openconstructionerp.com`, so a demo-seeded install still reports "no admin".
 - `UserService.register()` therefore promotes the **first registrant with a non-demo email** to `role="admin"`, `is_active=True`. This bootstrap path is permitted even when `registration_mode` is `closed`, so an operator can always get in.
-- Every later registrant defaults to `viewer` (`OE_DEFAULT_REGISTRATION_ROLE`); `admin` is never grantable through self-registration.
+- Every later registrant defaults to `OE_DEFAULT_REGISTRATION_ROLE` (`viewer` unless overridden to `editor` or `manager`); `admin` is never grantable through self-registration.
 
 So the supported way to create a real admin is the ordinary registration endpoint or the `/register` form — not direct database edits. Confirm no real admin exists first, since the promotion only applies to the first one.
 
@@ -210,7 +231,7 @@ A `201` response alone is not proof the account is usable. Confirm all of:
 
 1. `POST /api/v1/users/auth/login/` returns a token.
 2. `GET /api/v1/users/me/` reports the expected `role` and `is_active: true`.
-3. For an admin, an admin-only endpoint such as `GET /api/v1/users/` returns `200` rather than `403`.
+3. For an admin, an admin-only endpoint such as `GET /api/v1/users/auth/demo-login/settings/` returns `200` rather than `403`.
 4. The credentials work in the browser login form and reach an authenticated route.
 
 ## 5. Execute app workflows
@@ -226,13 +247,46 @@ Before changing data, identify whether the requested workflow is read-only or mu
 
 For read-only investigation, prefer navigation and filtering over direct database manipulation. Use application APIs only when the user asks for API-level testing or the UI cannot expose the needed diagnostic.
 
+### Long-running actions report nothing in the UI
+
+Some actions start a streaming server-side job and give no spinner, no toast, and no progress bar. The trigger button simply disappears from the DOM, which is indistinguishable from a click that did nothing. Installing a partner pack (`POST /api/v1/partner-pack/full-install-stream`) behaves this way: it downloads a cost-data parquet of tens of megabytes and imports it for well over a minute while the page looks idle.
+
+Do not retry the click and do not report failure. Confirm against the container log, then against the API:
+
+```bash
+docker logs --since 10m <application-container> 2>&1 \
+  | grep -iE 'pack|import|positions|error'
+```
+
+The import logs its own completion, for example `CWICR USA_USD: 55719 imported, 0 skipped in 78.4s`.
+
+Counters already rendered on the page are **stale client state** and are not re-fetched when the job finishes. A panel reading `0 loaded` after a successful import is a display artefact, not evidence. Verify with the API instead:
+
+```bash
+GET /api/v1/partner-pack/installed   # active_slug plus the installed list
+GET /api/v1/costs/base-catalog/      # per-base loaded counts
+```
+
+### Driving the first-run setup wizard
+
+A newly created real admin lands on `/onboarding`, a six-step wizard: Welcome (language), Start, Profile, Modules, Data, Finish. Every step offers a **Skip setup** control that jumps straight to the dashboard.
+
+These steps encode business decisions, so present the options and let the user choose rather than picking defaults:
+
+- **Start** offers Quick Start, a ready-made country pack, or choosing a profile by hand.
+- **Profile** sets a module baseline by team size, from Solo (5 modules) to Large Enterprise (67).
+- **Modules** only controls what appears in the menu. Nothing is deleted and it is changeable in Settings, so it is a safe choice to revisit.
+- **Data** is the only step that loads data, and it is the slow one. A country pack installs language, cost databases and sample projects in one action. It **downloads from GitHub at install time**, so it needs network egress from the container and is not available on an air-gapped host.
+
+The wizard exits to `/projects`, not `/dashboard`. Treat arrival there as the completion signal and confirm the module navigation rendered.
+
 ## 6. Smoke-test checklist
 
 For a basic availability check, verify:
 
 - The application container is running and healthy.
 - The published root URL responds successfully.
-- `/api/health` reports `status: healthy`, `database: ok`, and `schema_matches_models: true`.
+- `/api/health` reports `status: healthy`, `database: ok`, and does not report `schema_matches_models: false`.
 - The login page renders without a server error.
 - Static assets load and the page has no obvious fatal error.
 
@@ -262,8 +316,10 @@ Common distinctions:
 - A healthy container with an unreachable host URL usually indicates a missing or different port mapping.
 - A reachable login page with failed login indicates an authentication or seed-data issue, not a Docker networking issue.
 - A page that loads but lacks expected content may indicate frontend asset, API proxy, or backend readiness problems; inspect browser errors and container logs before changing code.
-- A `404` from an API call is usually a wrong path, not a missing feature — check the nesting and the trailing slash before concluding the endpoint does not exist.
+- A `404` from an API call is usually a wrong path, not a missing feature — check the nesting and OpenAPI-listed path before concluding the endpoint does not exist.
 - A stale-element-reference error is a browser-harness issue, not an application bug; re-read the page and retry once.
+- A button that vanishes after a click without a spinner or toast usually means a streaming server-side job started. Check the container log before retrying; a second click can start a duplicate import.
+- An on-screen counter that still reads zero after an import finished is stale client state. Re-fetch from the API rather than concluding the action failed.
 - `docker compose` reporting no services while containers are clearly running means the stack belongs to another directory; target it with `docker compose -p <project>` rather than starting a new one.
 - A stack that is healthy but missing expected records after a move means the new project got fresh volumes, or the `.env` was regenerated and no longer matches the old Postgres password. Check the volume prefix and the `.env` before assuming data loss.
 
