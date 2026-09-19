@@ -162,7 +162,11 @@ Determine whether the page is a login screen before entering anything. If creden
 
 ### Demo accounts
 
-Seeded demo accounts use the `@openconstructionerp.com` domain. Fresh installs generate per-installation demo passwords unless `DEMO_*_PASSWORD` is set, so do not rely on a published password; use the login page's one-click demo sign-in button or `/auth/demo-login/`, which are the fastest ways to smoke-test without typing a password.
+Seeded demo accounts use the `@openconstructionerp.com` domain. Fresh installs store a randomly generated password per installation unless `DEMO_*_PASSWORD` is set, so the stored hash never matches the documented `DemoPass1234!`.
+
+On a non-production install with `SEED_DEMO` enabled, the login form routes demo emails through a password-free shortcut, so **any** password submitted for a demo address succeeds. That makes the documented credentials work without a hardcoded password, but it also means a successful demo login proves nothing about the password you typed. Do not use a demo account to test authentication itself. Production installs set `SEED_DEMO=false`, which disables the shortcut and restores normal password verification.
+
+Prefer the login page's one-click demo sign-in button or `/auth/demo-login/`, which are the fastest ways to smoke-test without typing a password.
 
 Demo accounts are not a substitute for a real account. When the user asks for a "real" user, do not hand them a demo login.
 
