@@ -77,7 +77,14 @@ docker inspect <container> \
 docker compose -f <same-compose-file> -p <project> down   # no -v: keeps the named volumes
 ```
 
-Do not rely on the `com.docker.compose.project.working_dir` label to control the stack — it may be unavailable or unusable from this checkout. Use the project name, which is always set, and reuse the original Compose file list when running Compose commands against that project.
+The `com.docker.compose.project.working_dir` and `com.docker.compose.project.config_files` labels record where the stack was launched from and which files built it. Note the dots: a `project_working_dir` spelling matches nothing and returns empty, which reads as "no directory" rather than "wrong key".
+
+```bash
+docker inspect <container> --format \
+  '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+```
+
+Prefer the project name to address the stack, and reuse the original Compose file list when running Compose commands against it.
 
 ### Relocating a running stack without losing data
 
@@ -167,13 +174,13 @@ If the user asks you to generate a password, keep it out of tool arguments and l
 umask 077 && python3 -c "import secrets,string; \
   alphabet=string.ascii_letters+string.digits+'+/'; \
   chars=[secrets.choice(string.ascii_letters), secrets.choice(string.digits)] + [secrets.choice(alphabet) for _ in range(18)]; \
-  secrets.SystemRandom().shuffle(chars); print(''.join(chars))" > .copilot-session-pw.txt
+  secrets.SystemRandom().shuffle(chars); print(''.join(chars))" > "${TMPDIR:-/tmp}/pw.txt"
 ```
 
 Pass it to the API by reading the file *inside* the request script, never by interpolating it into a command line. Reveal it to the user only if they explicitly asked for a one-time display, tell them to change it immediately, and delete the file when done:
 
 ```bash
-shred -u .copilot-session-pw.txt 2>/dev/null || rm -f .copilot-session-pw.txt
+shred -u "${TMPDIR:-/tmp}/pw.txt" 2>/dev/null || rm -f "${TMPDIR:-/tmp}/pw.txt"
 ```
 
 ## 4. API access and user administration
