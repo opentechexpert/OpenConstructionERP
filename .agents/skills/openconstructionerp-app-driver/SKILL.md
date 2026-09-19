@@ -74,7 +74,8 @@ make quickstart-arm64      # or the platform-appropriate target
 docker ps --format '{{.Names}}' # project is the name prefix
 docker inspect <container> \
   --format '{{index .Config.Labels "com.docker.compose.project"}}'
-docker compose -f <same-compose-file> -p <project> down   # no -v: keeps the named volumes
+docker compose <original-compose-file-list> -p <project> down   # no -v: keeps the named volumes
+# see below for deriving <original-compose-file-list> from the container
 ```
 
 The `com.docker.compose.project.working_dir` and `com.docker.compose.project.config_files` labels record where the stack was launched from and which files built it. Note the dots: a `project_working_dir` spelling matches nothing and returns empty, which reads as "no directory" rather than "wrong key".
@@ -82,9 +83,12 @@ The `com.docker.compose.project.working_dir` and `com.docker.compose.project.con
 ```bash
 docker inspect <container> --format \
   '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+docker inspect <container> --format \
+  '{{index .Config.Labels "com.docker.compose.project.config_files"}}' \
+  | awk -F, '{for (i=1;i<=NF;i++) printf "-f %s ", $i; print ""}'
 ```
 
-Prefer the project name to address the stack, and reuse the original Compose file list when running Compose commands against it.
+The second command emits the list already formatted as repeated `-f` flags, ready to paste in as `<original-compose-file-list>`. This matters because the arm64 quickstart alone chains three files, and dropping one silently yields a different stack definition.
 
 ### Relocating a running stack without losing data
 
@@ -95,7 +99,7 @@ Two things bind the data to the old project, and both must be carried over:
 
 ```bash
 cp -p <old-dir>/.env <main-checkout>/.env
-docker compose -f <same-compose-file> -p <old-project> down          # no -v
+docker compose <original-compose-file-list> -p <old-project> down          # no -v
 for v in pg_data app_data; do
   docker volume create "<new-project>_$v"
   docker run --rm -v "<old-project>_$v":/from -v "<new-project>_$v":/to \
