@@ -389,6 +389,8 @@ irm https://raw.githubusercontent.com/datadrivenconstruction/OpenConstructionERP
 
 If you would rather not think about PATH at all, use this. It picks Docker if installed, otherwise uv, otherwise a dedicated Python virtual environment, installs OpenConstructionERP there, puts the `openconstructionerp` command on your PATH automatically, and finishes with a short panel showing the URL, the demo login and how to start. It also offers to launch right away. Open a new terminal afterwards and `openconstructionerp` just works. Runs at **http://localhost:8080**.
 
+Apple Silicon users with Docker installed should use the cloned repository path below instead of the one-line installer. The installer uses the same no-clone Docker files as Alternative 2, so it cannot see the arm64 compose override that lives in this fork.
+
 ### Alternative 2: Docker
 
 From the published image, no clone needed:
@@ -399,6 +401,16 @@ curl -fsSL https://raw.githubusercontent.com/datadrivenconstruction/OpenConstruc
 echo "POSTGRES_PASSWORD=$(openssl rand -base64 24)" >  .env
 echo "JWT_SECRET=$(openssl rand -hex 32)"           >> .env
 docker compose pull app && docker compose up -d
+```
+
+Apple Silicon users should not use the no-clone Docker commands above. They download only the two Compose files from `datadrivenconstruction/OpenConstructionERP`, where `docker-compose.arm64.yml` does not exist, so Docker still tries to pull the amd64-only app image without a platform override. Clone this fork before using the arm64 workaround:
+
+```bash
+git clone https://github.com/opentechexpert/OpenConstructionERP.git
+cd OpenConstructionERP
+echo "POSTGRES_PASSWORD=$(openssl rand -base64 24)" >  .env
+echo "JWT_SECRET=$(openssl rand -hex 32)"           >> .env
+make quickstart-arm64
 ```
 
 Or build from source (also the better choice on Apple Silicon):
@@ -413,7 +425,7 @@ make quickstart
 
 Open **http://localhost:8080**. See [docs/getting-started.md](docs/getting-started.md) for Windows PowerShell commands and the full compose file reference.
 
-> **On an Apple Silicon Mac?** `make quickstart` builds the frontend natively, which needs more memory than Docker Desktop allocates by default - raise it to about 12 GB or the build is killed with "cannot allocate memory". If you would rather not change that setting, run `make quickstart-arm64` instead: the published image with the app pinned to amd64 so it runs under emulation, with PostgreSQL still native. Details in [docker-compose.arm64.yml](docker-compose.arm64.yml).
+> **On an Apple Silicon Mac?** `make quickstart` builds the frontend natively, which needs more memory than Docker Desktop allocates by default - raise it to about 12 GB or the build is killed with "cannot allocate memory". If you would rather not change that setting, run `make quickstart-arm64` from a clone of this fork instead: the published image with the app pinned to amd64 so it runs under emulation, with PostgreSQL still native. Details in [docker-compose.arm64.yml](docker-compose.arm64.yml).
 
 ### Alternative 3: Local development (clone + npm + uvicorn)
 
