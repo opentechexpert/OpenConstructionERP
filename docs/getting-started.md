@@ -46,6 +46,16 @@ docker compose pull app
 docker compose up -d
 ```
 
+On Apple Silicon, do not use the no-clone Docker commands above. They download only the two Compose files from `datadrivenconstruction/OpenConstructionERP`, where `docker-compose.arm64.yml` does not exist, so Docker still tries to pull the amd64-only app image without a platform override. Clone this fork and run the arm64 target instead:
+
+```bash
+git clone https://github.com/opentechexpert/OpenConstructionERP.git
+cd OpenConstructionERP
+echo "POSTGRES_PASSWORD=$(openssl rand -base64 24)" >  .env
+echo "JWT_SECRET=$(openssl rand -hex 32)"           >> .env
+make quickstart-arm64
+```
+
 The app runs at [localhost:8080](http://localhost:8080).
 
 **Demo login:** `demo@openconstructionerp.com` / `DemoPass1234!`
