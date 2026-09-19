@@ -14,6 +14,7 @@ Use this skill when an agent needs to operate the running OpenConstructionERP ap
 ## Operating principles
 
 - Prefer the already-running application over starting a second copy.
+- Host the stack in the repository's main checkout so it outlives any single worktree or session.
 - Never print, commit, or expose passwords, tokens, cookies, or session headers.
 - Do not invent credentials. Ask the user for credentials or use credentials explicitly provided through the environment.
 - Treat destructive actions as requiring confirmation unless the user explicitly requested them.
@@ -54,20 +55,48 @@ curl --fail --silent --max-time 10 http://localhost:<published-port>/api/health
 
 A healthy response reports `status: healthy` plus `version`, `modules_loaded`, `database: ok`, and `schema_matches_models: true`. Treat `schema_matches_models: false` or a non-`ok` database as a blocker and report it instead of proceeding with UI work.
 
-### Containers owned by another worktree or session
+### Run the stack from the main checkout, not a worktree
 
-`docker ps` may reveal a healthy stack started by a *different* worktree of the same repository. The compose project name and working directory come from wherever it was launched, so:
+Host the stack in the repository's **main checkout**, not in a throwaway worktree. A worktree is deleted when its session ends, which strands the stack: the containers keep running under a compose project whose directory no longer exists, and the data sits in volumes named after a branch nobody recognises.
 
-- `docker compose ...` run from the current worktree will **not** control that stack. Read the owning directory first:
+The compose project name defaults to the directory name, so running from the main checkout gives a stable, predictable project (`openconstructionerp`) and volumes (`openconstructionerp_pg_data`, `openconstructionerp_app_data`).
 
-  ```bash
-  docker inspect <application-container> \
-    --format '{{index .Config.Labels "com.docker.compose.project"}} {{index .Config.Labels "com.docker.compose.project_working_dir"}}'
-  ```
+```bash
+git worktree list          # first entry is the main checkout
+cd <main-checkout>
+make quickstart-arm64      # or the platform-appropriate target
+```
 
-- Run any stop/restart/rebuild from the owning directory, never from the current one.
-- Ask the user before reusing a borrowed stack, and tell them the trade-off: reusing it is fastest, but the data lives in that stack's volumes and disappears if the owning session tears it down.
-- Starting a competing stack on the same port will fail; offer an alternate published port instead.
+`docker ps` may still reveal a healthy stack started from a *different* worktree. `docker compose` run from the current directory will not control it — target it by project name instead:
+
+```bash
+docker ps --format '{{.Names}}' # project is the name prefix
+docker inspect <container> \
+  --format '{{index .Config.Labels "com.docker.compose.project"}}'
+docker compose -p <project> down   # no -v: keeps the named volumes
+```
+
+Do not rely on the `com.docker.compose.project_working_dir` label to find the owning directory — it is frequently empty. Use the project name, which is always set.
+
+### Relocating a running stack without losing data
+
+Two things bind the data to the old project, and both must be carried over:
+
+1. **`.env`** — `make quickstart-secrets` generates `POSTGRES_PASSWORD` and `JWT_SECRET` into a gitignored `.env`. The password is baked into the Postgres volume at initialisation, so a freshly generated `.env` cannot read an existing volume. It refuses to overwrite an existing `.env`, so copying the old one first is both safe and required.
+2. **Named volumes** — they are prefixed with the project name and do not follow a move.
+
+```bash
+cp -p <old-dir>/.env <main-checkout>/.env
+docker compose -p <old-project> down          # no -v
+for v in pg_data app_data; do
+  docker volume create "<new-project>_$v"
+  docker run --rm -v "<old-project>_$v":/from -v "<new-project>_$v":/to \
+    alpine sh -c 'cd /from && cp -a . /to/'
+done
+cd <main-checkout> && make quickstart-arm64
+```
+
+Compose warns that the volumes were "not created by Docker Compose"; that is expected for pre-seeded volumes and is not an error. Verify the migration by confirming `/api/health` is healthy **and** that a known user still logs in with the same id — a healthy stack on an empty database looks identical to a successful move. Keep the old volumes until that check passes, then remove them.
 
 ### Apple Silicon (arm64) hosts
 
@@ -76,6 +105,8 @@ The published image is amd64 and runs under emulation on arm64. The no-clone qui
 ```bash
 make quickstart-arm64   # uses docker-compose.arm64.yml
 ```
+
+This target requires a `.env` containing `POSTGRES_PASSWORD` and `JWT_SECRET`; it fails with instructions if one is absent, rather than shipping defaults.
 
 ### Do not expect to run the backend test suite locally
 
@@ -233,14 +264,15 @@ Common distinctions:
 - A page that loads but lacks expected content may indicate frontend asset, API proxy, or backend readiness problems; inspect browser errors and container logs before changing code.
 - A `404` from an API call is usually a wrong path, not a missing feature — check the nesting and the trailing slash before concluding the endpoint does not exist.
 - A stale-element-reference error is a browser-harness issue, not an application bug; re-read the page and retry once.
-- `docker compose` reporting no services while containers are clearly running means the stack belongs to another directory; find its `project_working_dir` instead of starting a new one.
+- `docker compose` reporting no services while containers are clearly running means the stack belongs to another directory; target it with `docker compose -p <project>` rather than starting a new one.
+- A stack that is healthy but missing expected records after a move means the new project got fresh volumes, or the `.env` was regenerated and no longer matches the old Postgres password. Check the volume prefix and the `.env` before assuming data loss.
 
 ## 8. Report and clean up
 
 When finishing a session that touched the running app:
 
-- Report the exact URL and container/port used, and whether the stack was started by you or borrowed from another session.
-- If the stack was borrowed, warn the user that any data created lives in that stack's volumes.
+- Report the exact URL and container/port used, and which compose project owns the stack.
+- If the stack is running from a worktree rather than the main checkout, say so — it will not survive that session.
 - Delete temporary credential or response files written outside the repository.
 - Confirm the repository worktree is still clean (`git status --porcelain`) when the task was operational and was not meant to change code.
 - If a real administrator was created while demo accounts remain active, point out that the documented demo credentials are still valid and offer to disable demo sign-in.
