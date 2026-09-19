@@ -54,7 +54,7 @@ A `200` from `/` only proves the frontend shell was served. Use the application 
 curl --fail --silent --max-time 10 http://localhost:<published-port>/api/health
 ```
 
-A healthy response reports `status: healthy` plus `version`, `modules_loaded`, `database: ok`, and `schema_matches_models: true`. Treat `schema_matches_models: false` or a non-`ok` database as a blocker and report it instead of proceeding with UI work.
+A healthy response reports `status: healthy` plus `version`, `modules_loaded`, and `database: ok`. `schema_matches_models` can be `true` or `null` on a healthy response; treat only `schema_matches_models: false` or a non-`ok` database as a blocker and report it instead of proceeding with UI work.
 
 ### Run the stack from the main checkout, not a worktree
 
@@ -74,21 +74,21 @@ make quickstart-arm64      # or the platform-appropriate target
 docker ps --format '{{.Names}}' # project is the name prefix
 docker inspect <container> \
   --format '{{index .Config.Labels "com.docker.compose.project"}}'
-docker compose -p <project> down   # no -v: keeps the named volumes
+docker compose -f <same-compose-file> -p <project> down   # no -v: keeps the named volumes
 ```
 
-Do not rely on the `com.docker.compose.project_working_dir` label to find the owning directory — it is frequently empty. Use the project name, which is always set.
+Do not rely on the `com.docker.compose.project.working_dir` label to control the stack — it may be unavailable or unusable from this checkout. Use the project name, which is always set, and reuse the original Compose file list when running Compose commands against that project.
 
 ### Relocating a running stack without losing data
 
 Two things bind the data to the old project, and both must be carried over:
 
-1. **`.env`** — `make quickstart-secrets` generates `POSTGRES_PASSWORD` and `JWT_SECRET` into a gitignored `.env`. The password is baked into the Postgres volume at initialisation, so a freshly generated `.env` cannot read an existing volume. It refuses to overwrite an existing `.env`, so copying the old one first is both safe and required.
+1. **`.env`** — `make quickstart-secrets` only checks for `POSTGRES_PASSWORD` and `JWT_SECRET`, then prints commands and exits when either is missing. The password is baked into the Postgres volume at initialisation, so a freshly generated `.env` cannot read an existing volume. Copying the old `.env` first is both safe and required.
 2. **Named volumes** — they are prefixed with the project name and do not follow a move.
 
 ```bash
 cp -p <old-dir>/.env <main-checkout>/.env
-docker compose -p <old-project> down          # no -v
+docker compose -f <same-compose-file> -p <old-project> down          # no -v
 for v in pg_data app_data; do
   docker volume create "<new-project>_$v"
   docker run --rm -v "<old-project>_$v":/from -v "<new-project>_$v":/to \
@@ -155,7 +155,7 @@ Determine whether the page is a login screen before entering anything. If creden
 
 ### Demo accounts
 
-Seeded demo accounts use the `@openconstructionerp.com` domain and their credentials are published in the repository documentation, so they are not secrets and may appear in commands. The login page also exposes a one-click demo sign-in button, which is the fastest way to smoke-test without typing a password.
+Seeded demo accounts use the `@openconstructionerp.com` domain. Fresh installs generate per-installation demo passwords unless `DEMO_*_PASSWORD` is set, so do not rely on a published password; use the login page's one-click demo sign-in button or `/auth/demo-login/`, which are the fastest ways to smoke-test without typing a password.
 
 Demo accounts are not a substitute for a real account. When the user asks for a "real" user, do not hand them a demo login.
 
@@ -165,20 +165,22 @@ If the user asks you to generate a password, keep it out of tool arguments and l
 
 ```bash
 umask 077 && python3 -c "import secrets,string; \
-  print(''.join(secrets.choice(string.ascii_letters+string.digits+'+/') for _ in range(20)))" > /tmp/pw.txt
+  alphabet=string.ascii_letters+string.digits+'+/'; \
+  chars=[secrets.choice(string.ascii_letters), secrets.choice(string.digits)] + [secrets.choice(alphabet) for _ in range(18)]; \
+  secrets.SystemRandom().shuffle(chars); print(''.join(chars))" > .copilot-session-pw.txt
 ```
 
 Pass it to the API by reading the file *inside* the request script, never by interpolating it into a command line. Reveal it to the user only if they explicitly asked for a one-time display, tell them to change it immediately, and delete the file when done:
 
 ```bash
-shred -u /tmp/pw.txt 2>/dev/null || rm -f /tmp/pw.txt
+shred -u .copilot-session-pw.txt 2>/dev/null || rm -f .copilot-session-pw.txt
 ```
 
 ## 4. API access and user administration
 
 ### Endpoint layout
 
-Auth endpoints are nested **under the users module**, not at a top-level `/auth`. Trailing slashes are required.
+Auth endpoints are nested **under the users module**, not at a top-level `/auth`. The trailing-slash forms are canonical and visible in OpenAPI; bare forms are also registered for compatibility but hidden from the spec.
 
 ```text
 POST /api/v1/users/auth/login/
@@ -186,7 +188,7 @@ POST /api/v1/users/auth/register/
 POST /api/v1/users/auth/refresh/
 POST /api/v1/users/auth/demo-login/
 GET  /api/v1/users/me/
-GET  /api/v1/users/            # admin only
+GET  /api/v1/users/            # users.list permission (manager+) required
 ```
 
 Guessing `/api/v1/auth/login` returns `404`. When a path is unknown, read the spec rather than guessing — but note it is several megabytes, so filter it and never dump it into the transcript:
@@ -202,7 +204,7 @@ The installation bootstraps its first administrator through normal registration:
 
 - `UserRepository.has_admin()` deliberately excludes any email matching `%@openconstructionerp.com`, so a demo-seeded install still reports "no admin".
 - `UserService.register()` therefore promotes the **first registrant with a non-demo email** to `role="admin"`, `is_active=True`. This bootstrap path is permitted even when `registration_mode` is `closed`, so an operator can always get in.
-- Every later registrant defaults to `viewer` (`OE_DEFAULT_REGISTRATION_ROLE`); `admin` is never grantable through self-registration.
+- Every later registrant defaults to `OE_DEFAULT_REGISTRATION_ROLE` (`viewer` unless overridden to `editor` or `manager`); `admin` is never grantable through self-registration.
 
 So the supported way to create a real admin is the ordinary registration endpoint or the `/register` form — not direct database edits. Confirm no real admin exists first, since the promotion only applies to the first one.
 
@@ -214,7 +216,7 @@ A `201` response alone is not proof the account is usable. Confirm all of:
 
 1. `POST /api/v1/users/auth/login/` returns a token.
 2. `GET /api/v1/users/me/` reports the expected `role` and `is_active: true`.
-3. For an admin, an admin-only endpoint such as `GET /api/v1/users/` returns `200` rather than `403`.
+3. For an admin, an admin-only endpoint such as `GET /api/v1/users/auth/demo-login/settings/` returns `200` rather than `403`.
 4. The credentials work in the browser login form and reach an authenticated route.
 
 ## 5. Execute app workflows
@@ -269,7 +271,7 @@ For a basic availability check, verify:
 
 - The application container is running and healthy.
 - The published root URL responds successfully.
-- `/api/health` reports `status: healthy`, `database: ok`, and `schema_matches_models: true`.
+- `/api/health` reports `status: healthy`, `database: ok`, and does not report `schema_matches_models: false`.
 - The login page renders without a server error.
 - Static assets load and the page has no obvious fatal error.
 
@@ -299,7 +301,7 @@ Common distinctions:
 - A healthy container with an unreachable host URL usually indicates a missing or different port mapping.
 - A reachable login page with failed login indicates an authentication or seed-data issue, not a Docker networking issue.
 - A page that loads but lacks expected content may indicate frontend asset, API proxy, or backend readiness problems; inspect browser errors and container logs before changing code.
-- A `404` from an API call is usually a wrong path, not a missing feature — check the nesting and the trailing slash before concluding the endpoint does not exist.
+- A `404` from an API call is usually a wrong path, not a missing feature — check the nesting and OpenAPI-listed path before concluding the endpoint does not exist.
 - A stale-element-reference error is a browser-harness issue, not an application bug; re-read the page and retry once.
 - A button that vanishes after a click without a spinner or toast usually means a streaming server-side job started. Check the container log before retrying; a second click can start a duplicate import.
 - An on-screen counter that still reads zero after an import finished is stale client state. Re-fetch from the API rather than concluding the action failed.
